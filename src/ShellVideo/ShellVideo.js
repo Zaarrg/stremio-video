@@ -214,13 +214,14 @@ function ShellVideo(options) {
         }
 
         // Cap time update to update only when a second passes
-        var current_time = args.name === 'time-pos' ? Math.floor(props['time-pos'] / 1000) : null;
-        if((!current_time || last_time !== current_time)&& stremioProps[args.name]) {
-            if(current_time) {
-                last_time = current_time;
-            }
-            onPropChanged(stremioProps[args.name]);
-        }
+        //var current_time = args.name === 'time-pos' ? Math.floor(props['time-pos'] / 1000) : null;
+        //if((!current_time || last_time !== current_time)&& stremioProps[args.name]) {
+        //    if(current_time) {
+        //        last_time = current_time;
+        //    }
+        //    onPropChanged(stremioProps[args.name]);
+        //}
+        // Removed for now to test video syncing
     });
     ipc.on('mpv-event-ended', function(args) {
         if (args.error) onError(args.error);
