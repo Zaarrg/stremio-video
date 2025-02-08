@@ -222,6 +222,7 @@ function ShellVideo(options) {
         //    onPropChanged(stremioProps[args.name]);
         //}
         // Removed for now to test video syncing
+        onPropChanged(stremioProps[args.name]);
     });
     ipc.on('mpv-event-ended', function(args) {
         if (args.error) onError(args.error);
