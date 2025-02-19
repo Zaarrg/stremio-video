@@ -201,6 +201,7 @@ function ShellVideo(options) {
                             label: x.title?.includes("External") ? x.lang : (x.title || x.lang || ''),
                             origin: x.title?.includes("External") ? x.title.replace('External', '') : 'EMBEDDED',
                             embedded: true,
+                            forced: x.forced || false,
                             mode: x.id === props.sid ? 'showing' : 'disabled',
                         };
                     });
