@@ -4,17 +4,23 @@ var deepFreeze = require('deep-freeze');
 var Color = require('color');
 var ERROR = require('../error');
 
+var SSA_DESCRIPTORS_REGEX = /^\{(\\an[1-8])+\}/i;
+
 function TitanVideo(options) {
     options = options || {};
+
+    var size = 100;
+    var offset = 0;
+    var textColor = 'rgb(255, 255, 255)';
+    var backgroundColor = 'rgba(0, 0, 0, 0)';
+    var outlineColor = 'rgb(34, 34, 34)';
+    var subtitlesOpacity = 1;
 
     var containerElement = options.containerElement;
     if (!(containerElement instanceof HTMLElement)) {
         throw new Error('Container element required to be instance of HTMLElement');
     }
 
-    var styleElement = document.createElement('style');
-    containerElement.appendChild(styleElement);
-    styleElement.sheet.insertRule('video::cue { font-size: 4vmin; color: rgb(255, 255, 255); background-color: rgba(0, 0, 0, 0); text-shadow: rgb(34, 34, 34) 1px 1px 0.1em; }');
     var videoElement = document.createElement('video');
     videoElement.style.width = '100%';
     videoElement.style.height = '100%';
@@ -35,48 +41,39 @@ function TitanVideo(options) {
     };
     videoElement.ontimeupdate = function() {
         onPropChanged('time');
-        onPropChanged('buffered');
     };
     videoElement.ondurationchange = function() {
         onPropChanged('duration');
     };
     videoElement.onwaiting = function() {
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.onseeking = function() {
         onPropChanged('time');
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.onseeked = function() {
         onPropChanged('time');
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.onstalled = function() {
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.onplaying = function() {
         onPropChanged('time');
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.oncanplay = function() {
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.canplaythrough = function() {
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.onloadedmetadata = function() {
         onPropChanged('loaded');
     };
     videoElement.onloadeddata = function() {
         onPropChanged('buffering');
-        onPropChanged('buffered');
     };
     videoElement.onvolumechange = function() {
         onPropChanged('volume');
@@ -88,17 +85,23 @@ function TitanVideo(options) {
     videoElement.textTracks.onchange = function() {
         onPropChanged('subtitlesTracks');
         onPropChanged('selectedSubtitlesTrackId');
-        onCueChange();
-        Array.from(videoElement.textTracks).forEach(function(track) {
-            track.oncuechange = onCueChange;
-        });
     };
     containerElement.appendChild(videoElement);
+
+    var subtitlesElement = document.createElement('div');
+    subtitlesElement.style.position = 'absolute';
+    subtitlesElement.style.right = '0';
+    subtitlesElement.style.bottom = '0';
+    subtitlesElement.style.left = '0';
+    subtitlesElement.style.zIndex = '1';
+    subtitlesElement.style.textAlign = 'center';
+    containerElement.style.position = 'relative';
+    containerElement.style.zIndex = '0';
+    containerElement.appendChild(subtitlesElement);
 
     var events = new EventEmitter();
     var destroyed = false;
     var stream = null;
-    var subtitlesOffset = 0;
     var observedProps = {
         stream: false,
         loaded: false,
@@ -106,7 +109,6 @@ function TitanVideo(options) {
         time: false,
         duration: false,
         buffering: false,
-        buffered: false,
         subtitlesTracks: false,
         selectedSubtitlesTrackId: false,
         subtitlesOffset: false,
@@ -120,6 +122,74 @@ function TitanVideo(options) {
         muted: false,
         playbackSpeed: false
     };
+
+    var lastSub;
+    var disabledSubs = false;
+
+    async function refreshSubtitle() {
+        if (lastSub) {
+            renderSubtitle(lastSub.text, 'show');
+        }
+    }
+
+    async function renderSubtitle(text, visibility) {
+        if (disabledSubs) return;
+        if (visibility === 'hide') {
+            while (subtitlesElement.hasChildNodes()) {
+                subtitlesElement.removeChild(subtitlesElement.lastChild);
+            }
+            lastSub = null;
+            return;
+        }
+
+        lastSub = {
+            text: text,
+        };
+
+        while (subtitlesElement.hasChildNodes()) {
+            subtitlesElement.removeChild(subtitlesElement.lastChild);
+        }
+
+        subtitlesElement.style.bottom = offset + '%';
+        subtitlesElement.style.opacity = subtitlesOpacity;
+
+        var cueNode = document.createElement('span');
+        cueNode.innerHTML = text;
+        cueNode.style.display = 'inline-block';
+        cueNode.style.padding = '0.2em';
+        cueNode.style.fontSize = Math.floor(size / 25) + 'vmin';
+        cueNode.style.color = textColor;
+        cueNode.style.backgroundColor = backgroundColor;
+        cueNode.style.textShadow = '1px 1px 0.1em ' + outlineColor;
+        cueNode.style.whiteSpace = 'pre-wrap';
+
+        subtitlesElement.appendChild(cueNode);
+        subtitlesElement.appendChild(document.createElement('br'));
+
+    }
+
+    function renderCue(ev) {
+        var cues = (ev.target || {}).activeCues;
+        if (!cues.length) {
+            renderSubtitle('', 'hide');
+        } else {
+            if (cues.length > 3) {
+                // most probably SSA/ASS subs glitch
+                ev.target.removeEventListener('cuechange', renderCue);
+                renderSubtitle('', 'hide');
+                return;
+            }
+            var text = '';
+            for (var i in cues) {
+                var cue = cues[i];
+                if (cue.text) {
+                    var cleanedText = cue.text.replace(SSA_DESCRIPTORS_REGEX, '');
+                    text += (text ? '\n' : '') + cleanedText;
+                }
+            }
+            renderSubtitle(text, 'show');
+        }
+    }
 
     function getProp(propName) {
         switch (propName) {
@@ -161,20 +231,6 @@ function TitanVideo(options) {
 
                 return videoElement.readyState < videoElement.HAVE_FUTURE_DATA;
             }
-            case 'buffered': {
-                if (stream === null) {
-                    return null;
-                }
-
-                var time = videoElement.currentTime !== null && isFinite(videoElement.currentTime) ? videoElement.currentTime : 0;
-                for (var i = 0; i < videoElement.buffered.length; i++) {
-                    if (videoElement.buffered.start(i) <= time && time <= videoElement.buffered.end(i)) {
-                        return Math.floor(videoElement.buffered.end(i) * 1000);
-                    }
-                }
-
-                return Math.floor(time * 1000);
-            }
             case 'subtitlesTracks': {
                 if (stream === null) {
                     return [];
@@ -209,7 +265,7 @@ function TitanVideo(options) {
 
                 return Array.from(videoElement.textTracks)
                     .reduce(function(result, track, index) {
-                        if (result === null && track.mode === 'showing') {
+                        if (result === null && track.mode === 'hidden') {
                             return 'EMBEDDED_' + String(index);
                         }
 
@@ -221,35 +277,42 @@ function TitanVideo(options) {
                     return null;
                 }
 
-                return subtitlesOffset;
+                return offset;
             }
             case 'subtitlesSize': {
                 if (destroyed) {
                     return null;
                 }
 
-                return parseInt(styleElement.sheet.cssRules[0].style.fontSize, 10) * 25;
+                return size;
             }
             case 'subtitlesTextColor': {
                 if (destroyed) {
                     return null;
                 }
 
-                return styleElement.sheet.cssRules[0].style.color;
+                return textColor;
             }
             case 'subtitlesBackgroundColor': {
                 if (destroyed) {
                     return null;
                 }
 
-                return styleElement.sheet.cssRules[0].style.backgroundColor;
+                return backgroundColor;
             }
             case 'subtitlesOutlineColor': {
                 if (destroyed) {
                     return null;
                 }
 
-                return styleElement.sheet.cssRules[0].style.textShadow.slice(0, styleElement.sheet.cssRules[0].style.textShadow.indexOf(')') + 1);
+                return outlineColor;
+            }
+            case 'subtitlesOpacity': {
+                if (destroyed) {
+                    return null;
+                }
+
+                return subtitlesOpacity;
             }
             case 'audioTracks': {
                 if (stream === null) {
@@ -316,14 +379,6 @@ function TitanVideo(options) {
             }
         }
     }
-    function onCueChange() {
-        Array.from(videoElement.textTracks).forEach(function(track) {
-            Array.from(track.cues || []).forEach(function(cue) {
-                cue.snapToLines = false;
-                cue.line = 100 - subtitlesOffset;
-            });
-        });
-    }
     function onVideoError() {
         if (destroyed) {
             return;
@@ -388,6 +443,7 @@ function TitanVideo(options) {
             }
             case 'time': {
                 if (stream !== null && propValue !== null && isFinite(propValue)) {
+                    renderSubtitle('', 'hide');
                     videoElement.currentTime = parseInt(propValue, 10) / 1000;
                     onPropChanged('time');
                 }
@@ -398,7 +454,13 @@ function TitanVideo(options) {
                 if (stream !== null) {
                     Array.from(videoElement.textTracks)
                         .forEach(function(track, index) {
-                            track.mode = 'EMBEDDED_' + String(index) === propValue ? 'showing' : 'disabled';
+                            if (track.mode === 'hidden') {
+                                track.removeEventListener('cuechange', renderCue);
+                            }
+                            track.mode = 'EMBEDDED_' + String(index) === propValue ? 'hidden' : 'disabled';
+                            if (track.mode === 'hidden') {
+                                track.addEventListener('cuechange', renderCue);
+                            }
                         });
                     var selectedSubtitlesTrack = getProp('subtitlesTracks')
                         .find(function(track) {
@@ -414,8 +476,8 @@ function TitanVideo(options) {
             }
             case 'subtitlesOffset': {
                 if (propValue !== null && isFinite(propValue)) {
-                    subtitlesOffset = Math.max(0, Math.min(100, parseInt(propValue, 10)));
-                    onCueChange();
+                    offset = Math.max(0, Math.min(100, parseInt(propValue, 10)));
+                    refreshSubtitle();
                     onPropChanged('subtitlesOffset');
                 }
 
@@ -423,7 +485,8 @@ function TitanVideo(options) {
             }
             case 'subtitlesSize': {
                 if (propValue !== null && isFinite(propValue)) {
-                    styleElement.sheet.cssRules[0].style.fontSize = Math.floor(Math.max(0, parseInt(propValue, 10)) / 25) + 'vmin';
+                    size = Math.max(0, parseInt(propValue, 10));
+                    refreshSubtitle();
                     onPropChanged('subtitlesSize');
                 }
 
@@ -432,12 +495,13 @@ function TitanVideo(options) {
             case 'subtitlesTextColor': {
                 if (typeof propValue === 'string') {
                     try {
-                        styleElement.sheet.cssRules[0].style.color = Color(propValue).rgb().string();
+                        textColor = Color(propValue).rgb().string();
                     } catch (error) {
                         // eslint-disable-next-line no-console
-                        console.error('TitanVideo', error);
+                        console.error('Tizen player with HTML Subtitles', error);
                     }
 
+                    refreshSubtitle();
                     onPropChanged('subtitlesTextColor');
                 }
 
@@ -446,11 +510,13 @@ function TitanVideo(options) {
             case 'subtitlesBackgroundColor': {
                 if (typeof propValue === 'string') {
                     try {
-                        styleElement.sheet.cssRules[0].style.backgroundColor = Color(propValue).rgb().string();
+                        backgroundColor = Color(propValue).rgb().string();
                     } catch (error) {
                         // eslint-disable-next-line no-console
-                        console.error('TitanVideo', error);
+                        console.error('Tizen player with HTML Subtitles', error);
                     }
+
+                    refreshSubtitle();
 
                     onPropChanged('subtitlesBackgroundColor');
                 }
@@ -460,13 +526,31 @@ function TitanVideo(options) {
             case 'subtitlesOutlineColor': {
                 if (typeof propValue === 'string') {
                     try {
-                        styleElement.sheet.cssRules[0].style.textShadow = Color(propValue).rgb().string() + ' 1px 1px 0.1em';
+                        outlineColor = Color(propValue).rgb().string();
                     } catch (error) {
                         // eslint-disable-next-line no-console
-                        console.error('TitanVideo', error);
+                        console.error('Tizen player with HTML Subtitles', error);
                     }
 
+                    refreshSubtitle();
+
                     onPropChanged('subtitlesOutlineColor');
+                }
+
+                break;
+            }
+            case 'subtitlesOpacity': {
+                if (typeof propValue === 'number') {
+                    try {
+                        subtitlesOpacity = Math.min(Math.max(propValue / 100, 0), 1);
+                    } catch (error) {
+                        // eslint-disable-next-line no-console
+                        console.error('Tizen player with HTML Subtitles', error);
+                    }
+
+                    refreshSubtitle();
+
+                    onPropChanged('subtitlesOpacity');
                 }
 
                 break;
@@ -529,7 +613,6 @@ function TitanVideo(options) {
                     onPropChanged('time');
                     onPropChanged('duration');
                     onPropChanged('buffering');
-                    onPropChanged('buffered');
                     if (videoElement.textTracks) {
                         videoElement.textTracks.onaddtrack = function() {
                             videoElement.textTracks.onaddtrack = null;
@@ -571,7 +654,6 @@ function TitanVideo(options) {
                 onPropChanged('time');
                 onPropChanged('duration');
                 onPropChanged('buffering');
-                onPropChanged('buffered');
                 onPropChanged('subtitlesTracks');
                 onPropChanged('selectedSubtitlesTrackId');
                 onPropChanged('audioTracks');
@@ -608,7 +690,6 @@ function TitanVideo(options) {
                 videoElement.onratechange = null;
                 videoElement.textTracks.onchange = null;
                 containerElement.removeChild(videoElement);
-                containerElement.removeChild(styleElement);
                 break;
             }
         }
@@ -659,7 +740,7 @@ TitanVideo.canPlayStream = function(stream) {
 TitanVideo.manifest = {
     name: 'TitanVideo',
     external: false,
-    props: ['stream', 'loaded', 'paused', 'time', 'duration', 'buffering', 'buffered', 'audioTracks', 'selectedAudioTrackId', 'subtitlesTracks', 'selectedSubtitlesTrackId', 'subtitlesOffset', 'subtitlesSize', 'subtitlesTextColor', 'subtitlesBackgroundColor', 'subtitlesOutlineColor', 'volume', 'muted', 'playbackSpeed'],
+    props: ['stream', 'loaded', 'paused', 'time', 'duration', 'buffering', 'audioTracks', 'selectedAudioTrackId', 'subtitlesTracks', 'selectedSubtitlesTrackId', 'subtitlesOffset', 'subtitlesSize', 'subtitlesTextColor', 'subtitlesBackgroundColor', 'subtitlesOutlineColor', 'subtitlesOpacity', 'volume', 'muted', 'playbackSpeed'],
     commands: ['load', 'unload', 'destroy'],
     events: ['propValue', 'propChanged', 'ended', 'error', 'subtitlesTrackLoaded', 'audioTrackLoaded']
 };
